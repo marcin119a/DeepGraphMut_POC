@@ -1,0 +1,19 @@
+data/
+.DS_Store
+
+# Python cache and tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Generated data artifacts
+data/*.parquet
+data/COADREAD/
+propagated_profile.tsv
