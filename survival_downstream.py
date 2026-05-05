@@ -88,6 +88,7 @@ def build_dgm_embeddings(
     embed_dim: int,
     checkpoint_dir: Path | None = None,
     resume: bool = True,
+    no_train: bool = False,
 ) -> pd.DataFrame:
     """Returns DataFrame (index=case_barcode, cols=dgm_0..dgm_{d-1})."""
     import torch
@@ -111,16 +112,26 @@ def build_dgm_embeddings(
     )
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    print(f"─── DGM: training {epochs} epochs ───")
-    train(
-        model, dataset,
-        epochs=epochs,
-        batch_size=64,
-        lr=1e-4,
-        log_every=10,
-        checkpoint_dir=checkpoint_dir,
-        resume=resume,
-    )
+    trained = False
+    if checkpoint_dir is not None:
+        best_ckpt = Path(checkpoint_dir) / "checkpoint_best.pt"
+        if best_ckpt.exists() and (no_train or (resume and torch.load(best_ckpt, map_location="cpu")["epoch"] >= epochs)):
+            ckpt = torch.load(best_ckpt, map_location="cpu")
+            model.load_state_dict(ckpt["model_state_dict"])
+            print(f"─── DGM: loaded checkpoint (epoch {ckpt['epoch']}), skipping training ───")
+            trained = True
+
+    if not trained:
+        print(f"─── DGM: training {epochs} epochs ───")
+        train(
+            model, dataset,
+            epochs=epochs,
+            batch_size=64,
+            lr=1e-4,
+            log_every=10,
+            checkpoint_dir=checkpoint_dir,
+            resume=resume,
+        )
 
     print("─── DGM: extracting embeddings ───")
     emb = extract_embeddings(model, dataset, batch_size=128).numpy()  # (P, d)
@@ -317,6 +328,8 @@ def main() -> None:
                              "Training resumes automatically if a checkpoint exists.")
     parser.add_argument("--no-resume",       action="store_true",
                         help="Start DGM training from scratch even if a checkpoint exists.")
+    parser.add_argument("--no-train",        action="store_true",
+                        help="Skip training entirely; load best checkpoint and go straight to inference.")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -347,6 +360,7 @@ def main() -> None:
             embed_dim=args.embed_dim,
             checkpoint_dir=checkpoint_dir,
             resume=not args.no_resume,
+            no_train=args.no_train,
         )
         dgm_emb.to_parquet(dgm_cache)
         print(f"Cached DGM embeddings: {dgm_cache}")

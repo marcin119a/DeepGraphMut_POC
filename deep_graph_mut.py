@@ -18,6 +18,7 @@ Full pipeline
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -383,6 +384,21 @@ def _train_one_epoch(
     return total / len(loader)
 
 
+@torch.no_grad()
+def _eval_one_epoch(
+    model: DeepGraphMut,
+    loader: DataLoader,
+    device: torch.device,
+) -> float:
+    """Validation epoch (no gradient updates); returns mean loss over batches."""
+    model.eval()
+    total = 0.0
+    for batch in loader:
+        batch = batch.to(device)
+        total += model.compute_loss(batch).item()
+    return total / len(loader)
+
+
 def train(
     model: DeepGraphMut,
     dataset: MutationDataset,
@@ -393,9 +409,17 @@ def train(
     log_every: int = 10,
     checkpoint_dir: Optional[Path] = None,
     resume: bool = True,
-) -> List[float]:
+    val_split: float = 0.15,
+    val_dataset: Optional[MutationDataset] = None,
+) -> dict:
     """
     Trains the autoencoder end-to-end with Adam and Focal Loss.
+
+    Validation
+    ──────────
+    val_dataset  explicit held-out dataset; takes priority over val_split
+    val_split    fraction of `dataset` to hold out for validation (default 0.15);
+                 ignored when val_dataset is provided or val_split <= 0
 
     Checkpointing
     ─────────────
@@ -404,25 +428,48 @@ def train(
 
     Saves two files:
       checkpoint_latest.pt  — overwritten every log_every epochs
-      checkpoint_best.pt    — overwritten whenever loss improves
+      checkpoint_best.pt    — overwritten whenever val loss improves
 
     Returns
     ───────
-    history : list[float]  per-epoch mean reconstruction loss
+    history : dict with keys "train" and (optionally) "val" — per-epoch mean losses
     """
-    import os
+    from torch.utils.data import random_split
 
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
 
     model = model.to(device)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    # ── build train / val split ───────────────────────────────────────────────
+    if val_dataset is not None:
+        train_dataset = dataset
+    elif val_split > 0.0:
+        n_val = max(1, int(len(dataset) * val_split))
+        n_train = len(dataset) - n_val
+        train_dataset, val_dataset = random_split(
+            dataset,
+            [n_train, n_val],
+            generator=torch.Generator().manual_seed(42),
+        )
+        print(f"Train / val split: {n_train} / {n_val} patients")
+    else:
+        train_dataset = dataset
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = (
+        DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        if val_dataset is not None
+        else None
+    )
+
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    history: List[float] = []
+    train_history: List[float] = []
+    val_history: List[float] = []
     start_epoch = 1
-    best_loss = float("inf")
+    best_val_loss = float("inf")
 
     if checkpoint_dir is not None:
         checkpoint_dir = Path(checkpoint_dir)
@@ -435,36 +482,54 @@ def train(
             model.load_state_dict(ckpt["model_state_dict"])
             optimizer.load_state_dict(ckpt["optimizer_state_dict"])
             start_epoch = ckpt["epoch"] + 1
-            history = ckpt["history"]
-            best_loss = ckpt.get("best_loss", float("inf"))
-            print(f"Resumed from checkpoint: epoch {ckpt['epoch']}, loss {history[-1]:.6f}")
+            train_history = ckpt.get("train_history", ckpt.get("history", []))
+            val_history = ckpt.get("val_history", [])
+            best_val_loss = ckpt.get("best_val_loss", float("inf"))
+            print(
+                f"Resumed from checkpoint: epoch {ckpt['epoch']}, "
+                f"train loss {train_history[-1]:.6f}"
+                + (f", val loss {val_history[-1]:.6f}" if val_history else "")
+            )
     else:
         latest_ckpt = best_ckpt = None
 
     for epoch in range(start_epoch, epochs + 1):
-        loss = _train_one_epoch(model, loader, optimizer, device)
-        history.append(loss)
+        train_loss = _train_one_epoch(model, train_loader, optimizer, device)
+        train_history.append(train_loss)
+
+        if val_loader is not None:
+            val_loss = _eval_one_epoch(model, val_loader, device)
+            val_history.append(val_loss)
+        else:
+            val_loss = None
 
         if epoch == 1 or epoch % log_every == 0:
-            print(f"Epoch [{epoch:4d}/{epochs}]  Focal Loss: {loss:.6f}")
+            msg = f"Epoch [{epoch:4d}/{epochs}]  train={train_loss:.6f}"
+            if val_loss is not None:
+                msg += f"  val={val_loss:.6f}"
+            print(msg)
+
+        monitor_loss = val_loss if val_loss is not None else train_loss
 
         if checkpoint_dir is not None:
             state = {
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "history": history,
-                "best_loss": best_loss,
+                "train_history": train_history,
+                "val_history": val_history,
+                "best_val_loss": best_val_loss,
             }
             if epoch % log_every == 0 or epoch == epochs:
                 torch.save(state, latest_ckpt)
-            if loss < best_loss:
-                best_loss = loss
-                state["best_loss"] = best_loss
+            if monitor_loss < best_val_loss:
+                best_val_loss = monitor_loss
+                state["best_val_loss"] = best_val_loss
                 torch.save(state, best_ckpt)
-                print(f"  ✓ New best loss {best_loss:.6f} — saved {best_ckpt.name}")
+                label = "val" if val_loss is not None else "train"
+                print(f"  ✓ New best {label} loss {best_val_loss:.6f} — saved {best_ckpt.name}")
 
-    return history
+    return {"train": train_history, "val": val_history}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -604,7 +669,16 @@ if __name__ == "__main__":
         batch_size=64,
         lr=1e-4,
         log_every=5,
+        val_split=0.15,
+        checkpoint_dir=Path("checkpoints"),
     )
+
+    print(f"\nFinal train loss: {history['train'][-1]:.6f}")
+    if history["val"]:
+        best_val = min(history["val"])
+        best_ep = history["val"].index(best_val) + 1
+        print(f"Final val   loss: {history['val'][-1]:.6f}")
+        print(f"Best  val   loss: {best_val:.6f} (epoch {best_ep})")
 
     # ── 5. Patient embeddings ─────────────────────────────────────────────────
     embeddings = extract_embeddings(model, dataset, batch_size=128)
