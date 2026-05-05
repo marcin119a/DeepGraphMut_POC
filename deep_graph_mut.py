@@ -391,14 +391,27 @@ def train(
     lr: float = 1e-4,
     device: Optional[torch.device] = None,
     log_every: int = 10,
+    checkpoint_dir: Optional[Path] = None,
+    resume: bool = True,
 ) -> List[float]:
     """
     Trains the autoencoder end-to-end with Adam and Focal Loss.
+
+    Checkpointing
+    ─────────────
+    checkpoint_dir  path to save/load checkpoints; None = disabled
+    resume          if True and a checkpoint exists, training continues from it
+
+    Saves two files:
+      checkpoint_latest.pt  — overwritten every log_every epochs
+      checkpoint_best.pt    — overwritten whenever loss improves
 
     Returns
     ───────
     history : list[float]  per-epoch mean reconstruction loss
     """
+    import os
+
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
@@ -408,11 +421,48 @@ def train(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     history: List[float] = []
-    for epoch in range(1, epochs + 1):
+    start_epoch = 1
+    best_loss = float("inf")
+
+    if checkpoint_dir is not None:
+        checkpoint_dir = Path(checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        latest_ckpt = checkpoint_dir / "checkpoint_latest.pt"
+        best_ckpt = checkpoint_dir / "checkpoint_best.pt"
+
+        if resume and latest_ckpt.exists():
+            ckpt = torch.load(latest_ckpt, map_location=device)
+            model.load_state_dict(ckpt["model_state_dict"])
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            start_epoch = ckpt["epoch"] + 1
+            history = ckpt["history"]
+            best_loss = ckpt.get("best_loss", float("inf"))
+            print(f"Resumed from checkpoint: epoch {ckpt['epoch']}, loss {history[-1]:.6f}")
+    else:
+        latest_ckpt = best_ckpt = None
+
+    for epoch in range(start_epoch, epochs + 1):
         loss = _train_one_epoch(model, loader, optimizer, device)
         history.append(loss)
+
         if epoch == 1 or epoch % log_every == 0:
             print(f"Epoch [{epoch:4d}/{epochs}]  Focal Loss: {loss:.6f}")
+
+        if checkpoint_dir is not None:
+            state = {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "history": history,
+                "best_loss": best_loss,
+            }
+            if epoch % log_every == 0 or epoch == epochs:
+                torch.save(state, latest_ckpt)
+            if loss < best_loss:
+                best_loss = loss
+                state["best_loss"] = best_loss
+                torch.save(state, best_ckpt)
+                print(f"  ✓ New best loss {best_loss:.6f} — saved {best_ckpt.name}")
 
     return history
 
