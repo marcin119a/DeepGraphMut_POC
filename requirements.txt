@@ -13,3 +13,5 @@ matplotlib>=3.8
 certifi
 requests
 pyNBS @ git+https://github.com/marcin119a/pyNBS.git
+gdown
+pyarrow
