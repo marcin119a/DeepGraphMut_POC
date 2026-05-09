@@ -310,6 +310,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir",        default="data")
+    parser.add_argument("--ppi-file",        default=None,
+                        help="PPI network filename inside --data-dir "
+                             "(default: HumanNet90_Symbol.txt). "
+                             "For TCGA replication use NCG_network.txt.")
     parser.add_argument("--epochs",          type=int,   default=50)
     parser.add_argument("--embed-dim",       type=int,   default=10)
     parser.add_argument("--alpha",           type=float, default=0.7)
@@ -337,7 +341,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     joined_parquet   = data_dir / "joined.parquet"
-    ppi_txt          = data_dir / "HumanNet90_Symbol.txt"
+    ppi_filename     = args.ppi_file if args.ppi_file else "HumanNet90_Symbol.txt"
+    ppi_txt          = data_dir / ppi_filename
     survival_parquet = data_dir / "survival.parquet"
 
     for p in [joined_parquet, ppi_txt, survival_parquet]:
