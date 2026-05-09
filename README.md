@@ -112,6 +112,40 @@ history = train(model, dataset, epochs=50, batch_size=64, lr=1e-4)
 embeddings = extract_embeddings(model, dataset)  # (P, embed_dim)
 ```
 
+## TCGA replication workflow
+
+This pipeline converts raw TCGA data from `data_replication/` into the format expected by the DGM training script.
+
+### 1. Prepare data
+
+```bash
+python scripts/prepare_tcga_replication.py \
+    --replication-dir data_replication \
+    --out-dir data_tcga
+```
+
+Produces:
+- `data_tcga/joined.parquet` — one row per patient (mutations + primary_site)
+- `data_tcga/NCG_network.txt` — headerless PPI edge list
+
+### 2. Run training
+
+```bash
+python survival_downstream.py \
+    --data-dir data_tcga \
+    --ppi-file data_tcga/NCG_network.txt \
+    --out-dir data_tcga \
+    --checkpoint-dir checkpoints_tcga \
+    --epochs 50 \
+    --no-resume
+```
+
+Omit `--no-resume` to resume an interrupted run from an existing checkpoint.
+
+**Cancer types (16):** BLCA, LGG, BRCA, CESC, COAD, GBM, HNSC, KIRC, KIRP, LIHC, LUAD, LUSC, OV, SKCM, STAD, UCEC.
+
+---
+
 ## Data sources
 
 | Dataset | Source |
