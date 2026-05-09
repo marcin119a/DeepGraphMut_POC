@@ -126,7 +126,7 @@ def build_dgm_embeddings(
         train(
             model, dataset,
             epochs=epochs,
-            batch_size=64,
+            batch_size=8,
             lr=1e-4,
             log_every=10,
             checkpoint_dir=checkpoint_dir,
@@ -134,7 +134,7 @@ def build_dgm_embeddings(
         )
 
     print("─── DGM: extracting embeddings ───")
-    emb = extract_embeddings(model, dataset, batch_size=128).numpy()  # (P, d)
+    emb = extract_embeddings(model, dataset, batch_size=16).numpy()  # (P, d)
 
     df = pd.read_parquet(joined_parquet, columns=["case_barcode"])
     barcodes = df["case_barcode"].apply(_patient_id).tolist()
